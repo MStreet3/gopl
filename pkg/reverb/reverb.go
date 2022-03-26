@@ -44,7 +44,6 @@ func handleConnStream(stop chan int, stream chan net.Conn) {
 }
 
 func serve(stop chan int, listener net.Listener) {
-	log.Println("reverb server started...")
 	var (
 		wg         sync.WaitGroup
 		done       = make(chan int)
@@ -62,6 +61,7 @@ func serve(stop chan int, listener net.Listener) {
 		close(done)
 	}()
 
+	log.Println("reverb server started...")
 	for {
 		select {
 		case <-done:
