@@ -53,24 +53,35 @@ func handleConnStream(stop chan int, stream chan net.Conn) {
 
 // serve launches a listener that waits for new connections and places those connections on a
 // connection stream.  serve shuts itself down once the stop channel is closed.
-func serve(stop chan int, listener net.Listener) {
+func serve(stop chan int, addr string) {
 	var (
 		wg         sync.WaitGroup
+		listener   net.Listener
 		done       = make(chan int)
 		connStream = make(chan net.Conn)
 	)
 
+	// Create a new listener
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Launch connection handler, stop listening if conn handler stops
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		handleConnStream(stop, connStream)
+		listener.Close()
 	}()
 
+	// Wait for connection handler to finish to know server is done handling
 	go func() {
 		defer close(done)
 		wg.Wait()
 	}()
 
+	// Accept server connections until stopped, exit server when done cleaning up
 	log.Println("reverb server started...")
 	for {
 		select {
@@ -80,7 +91,6 @@ func serve(stop chan int, listener net.Listener) {
 
 		case <-stop:
 			log.Println("stopping reverb server")
-			continue
 
 		default:
 			log.Println("awaiting connections")
@@ -116,17 +126,11 @@ func main() {
 	flag.Parse()
 	addr = fmt.Sprintf("localhost:%d", port)
 
-	// Create a new listener
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	// Launch server
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		serve(shutdown, listener)
+		serve(shutdown, addr)
 	}()
 
 	// Launch shutdown watcher
@@ -143,7 +147,6 @@ func main() {
 			return
 		case <-interrupt:
 			log.Println("starting graceful shutdown")
-			listener.Close()
 			close(shutdown)
 		}
 	}
