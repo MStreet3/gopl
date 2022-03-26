@@ -11,17 +11,17 @@ import (
 )
 
 func echo(c net.Conn, shout string, delay time.Duration) {
-	fmt.Fprintf(c, "%s\n", strings.ToUpper(shout))
+	fmt.Fprintf(c, "\t%s\n", strings.ToUpper(shout))
 	time.Sleep(delay)
-	fmt.Fprintf(c, "%s\n", shout)
+	fmt.Fprintf(c, "\t%s\n", shout)
 	time.Sleep(delay)
-	fmt.Fprintf(c, "%s\n", strings.ToLower(shout))
+	fmt.Fprintf(c, "\t%s\n", strings.ToLower(shout))
 }
 
 func handleConn(c net.Conn) {
 	input := bufio.NewScanner(c)
 	for input.Scan() {
-		echo(c, input.Text(), 1*time.Second)
+		go echo(c, input.Text(), 1*time.Second)
 	}
 	c.Close()
 }
