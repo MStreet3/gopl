@@ -53,7 +53,7 @@ func handleConnStream(stop chan int, stream chan net.Conn) {
 
 // serve launches a listener that waits for new connections and places those connections on a
 // connection stream.  serve shuts itself down once the stop channel is closed.
-func serve(stop chan int, addr string) {
+func serve(stop chan int, addr string) error {
 	var (
 		wg         sync.WaitGroup
 		listener   net.Listener
@@ -64,7 +64,7 @@ func serve(stop chan int, addr string) {
 	// Create a new listener
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatal(err)
+		return NewReverbServerStartUpError(err)
 	}
 
 	// Launch connection handler, stop listening if conn handler stops
@@ -87,7 +87,7 @@ func serve(stop chan int, addr string) {
 		select {
 		case <-done:
 			log.Println("reverb server stopped")
-			return
+			return nil
 
 		case <-stop:
 			log.Println("stopping reverb server")
@@ -130,7 +130,11 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		serve(shutdown, addr)
+		err := serve(shutdown, addr)
+		if err != nil {
+			log.Println(err)
+			return
+		}
 	}()
 
 	// Launch shutdown watcher
