@@ -1,3 +1,5 @@
+// Package reverb implements a simple server that echoes back input read from a connection.  The
+// server gracefully shuts down in the event of a system interruption.
 package main
 
 import (
@@ -13,6 +15,8 @@ import (
 	"time"
 )
 
+// echo writes three values of shout to the given connection.  Each value is written after a
+// specified delay.
 func echo(c net.Conn, shout string, delay time.Duration) {
 	fmt.Fprintf(c, "\t%s\n", strings.ToUpper(shout))
 	time.Sleep(delay)
@@ -21,6 +25,8 @@ func echo(c net.Conn, shout string, delay time.Duration) {
 	fmt.Fprintf(c, "\t%s\n", strings.ToLower(shout))
 }
 
+// handleConn scans the connection and converts the found input into text for echoing back on the
+// connection.
 func handleConn(c net.Conn) {
 	input := bufio.NewScanner(c)
 	for input.Scan() {
@@ -29,6 +35,8 @@ func handleConn(c net.Conn) {
 	c.Close()
 }
 
+// handleConnStream handles each connection it pulls from a connection stream and stops when
+// the stop channel is closed.
 func handleConnStream(stop chan int, stream chan net.Conn) {
 	for {
 		select {
@@ -43,6 +51,8 @@ func handleConnStream(stop chan int, stream chan net.Conn) {
 	}
 }
 
+// serve launches a listener that waits for new connections and places those connections on a
+// connection stream.  serve shuts itself down once the stop channel is closed.
 func serve(stop chan int, listener net.Listener) {
 	var (
 		wg         sync.WaitGroup
@@ -57,8 +67,8 @@ func serve(stop chan int, listener net.Listener) {
 	}()
 
 	go func() {
+		defer close(done)
 		wg.Wait()
-		close(done)
 	}()
 
 	log.Println("reverb server started...")
@@ -85,15 +95,17 @@ func serve(stop chan int, listener net.Listener) {
 	}
 }
 
+// main launches a reverb server and waits for a system interrupt to gracefully shutdown the reverb
+// server.
 func main() {
 
 	var (
 		port      int
 		addr      string
 		wg        sync.WaitGroup
-		stop      = make(chan int)
-		done      = make(chan int)
 		interrupt = make(chan os.Signal, 1)
+		shutdown  = make(chan int)
+		done      = make(chan int)
 	)
 
 	// Notify main of any interruptions
@@ -114,7 +126,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		serve(stop, listener)
+		serve(shutdown, listener)
 	}()
 
 	// Launch shutdown watcher
@@ -132,7 +144,7 @@ func main() {
 		case <-interrupt:
 			log.Println("starting graceful shutdown")
 			listener.Close()
-			close(stop)
+			close(shutdown)
 		}
 	}
 }
