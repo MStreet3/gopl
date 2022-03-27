@@ -96,7 +96,7 @@ func serve(stop chan int, addr string) error {
 		heartbeat(stop)
 	}()
 
-	// Wait for connection handler to finish to know server is done handling
+	// Wait for all goroutines to finish to know server is done handling
 	go func() {
 		defer close(done)
 		wg.Wait()
