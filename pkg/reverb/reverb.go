@@ -16,13 +16,26 @@ import (
 )
 
 // echo writes three values of shout to the given connection.  Each value is written after a
-// specified delay.
+// specified delay with binary exponential backoff.
 func echo(c net.Conn, shout string, delay time.Duration) {
 	fmt.Fprintf(c, "\t%s\n", strings.ToUpper(shout))
-	time.Sleep(delay)
+	time.Sleep(delay * 2)
 	fmt.Fprintf(c, "\t%s\n", shout)
-	time.Sleep(delay)
+	time.Sleep(delay * 4)
 	fmt.Fprintf(c, "\t%s\n", strings.ToLower(shout))
+}
+
+// heartbeat logs a pulse every 2500 ms until stopped
+func heartbeat(stop chan int) {
+	for {
+		select {
+		case <-stop:
+			log.Println("stopped heartbeat")
+			return
+		case <-time.After(2500 * time.Millisecond):
+			log.Println("pulse")
+		}
+	}
 }
 
 // handleConn scans the connection and converts the found input into text for echoing back on the
@@ -73,6 +86,13 @@ func serve(stop chan int, addr string) error {
 		defer wg.Done()
 		handleConnStream(stop, connStream)
 		listener.Close()
+	}()
+
+	// Launch hearbeat service
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		heartbeat(stop)
 	}()
 
 	// Wait for connection handler to finish to know server is done handling
