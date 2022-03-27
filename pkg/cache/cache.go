@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -21,6 +21,13 @@ type (
 		fn Func
 	}
 )
+
+type response struct {
+	start time.Time
+	url   string
+	value interface{}
+	err   error
+}
 
 func (c *cache) Get(key string) (interface{}, error) {
 	return c.fn(key)
@@ -56,8 +63,8 @@ func incomingUrls() []string {
 	return append(urls, urls...)
 }
 
-// incomingUrlStream generates a fixed stream of urls
-func incomingUrlStream(stop <-chan int) <-chan string {
+// urlProducer generates a fixed stream of urls
+func urlProducer(stop <-chan int) <-chan string {
 	var (
 		repeat    = 1
 		urlStream = make(chan string)
@@ -75,6 +82,7 @@ func incomingUrlStream(stop <-chan int) <-chan string {
 			select {
 			case <-stop:
 				return
+
 			default:
 			}
 			for _, url := range urls {
@@ -86,16 +94,65 @@ func incomingUrlStream(stop <-chan int) <-chan string {
 	return urlStream
 }
 
+func handleUrl(respStream chan<- response, c *cache, url string) {
+	start := time.Now()
+	value, err := c.Get(url)
+	response := response{
+		start: start,
+		value: value,
+		err:   err,
+		url:   url,
+	}
+	respStream <- response
+}
+
+// urlConsumer reads from a urlStream and launches a new goroutine to execute the Get method
+// of the given cache.  Returns a stream of responses that is closed once all urls have been
+// processed.
+func urlConsumer(stop <-chan int, urlStream <-chan string, c *cache) <-chan response {
+	respStream := make(chan response)
+
+	// Launch goroutine to consume the urlStream, waits until all urls are fetched
+	// and then closes the response channel.
+	go func() {
+		var wg sync.WaitGroup
+		defer close(respStream)
+
+		for url := range urlStream {
+			select {
+			case <-stop:
+				return
+
+			default:
+			}
+
+			// For each url, launch goroutine to fetch the url
+			wg.Add(1)
+			go func(url string) {
+				defer wg.Done()
+				handleUrl(respStream, c, url)
+			}(url)
+		}
+
+		wg.Wait()
+	}()
+	return respStream
+}
+
 func main() {
-	c := NewCache(httpGetBody)
-	for _, url := range incomingUrls() {
-		start := time.Now()
-		value, err := c.Get(url)
-		if err != nil {
-			log.Println(err)
+	var (
+		c    = NewCache(httpGetBody)
+		stop = make(chan int)
+	)
+
+	respStream := urlConsumer(stop, urlProducer(stop), c)
+
+	for res := range respStream {
+		if res.err != nil {
+			fmt.Printf("error reading %s: %s", res.url, res.err)
 			continue
 		}
 
-		fmt.Printf("%s, %s, %d bytes\n", url, time.Since(start), len(value.([]byte)))
+		fmt.Printf("%s, %s, %d bytes\n", res.url, time.Since(res.start), len(res.value.([]byte)))
 	}
 }
