@@ -10,15 +10,24 @@ import (
 
 var _ Cache = (*cache)(nil)
 
-type Func func(string) (interface{}, error)
+var _ Cache = (*mutexCache)(nil)
+
+type Func func(key string) (interface{}, error)
 
 type (
 	Cache interface {
-		Get(string) (interface{}, error)
+		Get(key string) response
 	}
 
 	cache struct {
-		fn Func
+		fn    Func
+		store map[string]*entry
+	}
+
+	mutexCache struct {
+		fn    Func
+		store map[string]*entry
+		mu    *sync.Mutex
 	}
 )
 
@@ -29,13 +38,57 @@ type response struct {
 	err   error
 }
 
-func (c *cache) Get(key string) (interface{}, error) {
-	return c.fn(key)
+type entry struct {
+	res   response
+	ready chan int
+}
+
+func (c *cache) Get(key string) response {
+	return response{}
+}
+
+func (c *mutexCache) Get(key string) response {
+	// Check for a cache hit, block until entry is ready if cache hit
+	c.mu.Lock()
+	e := c.store[key]
+
+	if e != nil {
+		c.mu.Unlock()
+		<-e.ready
+		return e.res
+	}
+
+	// Cache miss, create entry and return the lock
+	e = &entry{
+		ready: make(chan int),
+	}
+	c.store[key] = e
+	c.mu.Unlock()
+
+	// Perform fetch and signal when ready
+	value, err := c.fn(key)
+
+	e.res = response{
+		value: value,
+		err:   err,
+		url:   key,
+	}
+	close(e.ready)
+	return e.res
 }
 
 func NewCache(f Func) *cache {
 	return &cache{
-		fn: f,
+		fn:    f,
+		store: make(map[string]*entry),
+	}
+}
+
+func NewMutexCache(f Func) *mutexCache {
+	return &mutexCache{
+		fn:    f,
+		store: make(map[string]*entry),
+		mu:    &sync.Mutex{},
 	}
 }
 
@@ -94,22 +147,17 @@ func urlProducer(stop <-chan int) <-chan string {
 	return urlStream
 }
 
-func handleUrl(respStream chan<- response, c *cache, url string) {
+func handleUrl(respStream chan<- response, c Cache, url string) {
 	start := time.Now()
-	value, err := c.Get(url)
-	response := response{
-		start: start,
-		value: value,
-		err:   err,
-		url:   url,
-	}
+	response := c.Get(url)
+	response.start = start
 	respStream <- response
 }
 
 // urlConsumer reads from a urlStream and launches a new goroutine to execute the Get method
 // of the given cache.  Returns a stream of responses that is closed once all urls have been
 // processed.
-func urlConsumer(stop <-chan int, urlStream <-chan string, c *cache) <-chan response {
+func urlConsumer(stop <-chan int, urlStream <-chan string, c Cache) <-chan response {
 	respStream := make(chan response)
 
 	// Launch goroutine to consume the urlStream, waits until all urls are fetched
@@ -141,7 +189,7 @@ func urlConsumer(stop <-chan int, urlStream <-chan string, c *cache) <-chan resp
 
 func main() {
 	var (
-		c    = NewCache(httpGetBody)
+		c    = NewMutexCache(httpGetBody)
 		stop = make(chan int)
 	)
 
