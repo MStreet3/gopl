@@ -32,6 +32,7 @@ func heartbeat(stop chan int) {
 		case <-stop:
 			log.Println("stopped heartbeat")
 			return
+
 		case <-time.After(2500 * time.Millisecond):
 			log.Println("pulse")
 		}
@@ -111,7 +112,6 @@ func serve(stop chan int, addr string) error {
 
 		case <-stop:
 			log.Println("stopping reverb server")
-
 		default:
 			log.Println("awaiting connections")
 			conn, err := listener.Accept()
@@ -128,7 +128,6 @@ func serve(stop chan int, addr string) error {
 // main launches a reverb server and waits for a system interrupt to gracefully shutdown the reverb
 // server.
 func main() {
-
 	var (
 		port      int
 		addr      string
@@ -152,6 +151,7 @@ func main() {
 		defer wg.Done()
 		err := serve(shutdown, addr)
 		if err != nil {
+			// could not serve, log and shut down
 			log.Println(err)
 			return
 		}
@@ -169,6 +169,7 @@ func main() {
 		case <-done:
 			log.Println("shutdown complete, goodbye")
 			return
+
 		case <-interrupt:
 			log.Println("starting graceful shutdown")
 			close(shutdown)
