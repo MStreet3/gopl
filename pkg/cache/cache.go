@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -20,8 +21,9 @@ type (
 	}
 
 	cache struct {
-		fn    Func
-		store map[string]*entry
+		fn        Func
+		store     map[string]*entry
+		reqStream chan request
 	}
 
 	mutexCache struct {
@@ -31,6 +33,10 @@ type (
 	}
 )
 
+type request struct {
+	url      string
+	response chan response
+}
 type response struct {
 	start time.Time
 	url   string
@@ -43,8 +49,57 @@ type entry struct {
 	ready chan int
 }
 
+func newEntry(key string) *entry {
+	return &entry{
+		res: response{
+			url: key,
+		},
+		ready: make(chan int),
+	}
+}
+
 func (c *cache) Get(key string) response {
-	return response{}
+	respStream := make(chan response)
+	c.reqStream <- request{
+		url:      key,
+		response: respStream,
+	}
+	response := <-respStream
+	return response
+}
+
+func (c *cache) handleRequests(stop chan int, f Func) {
+	for {
+		select {
+		case <-stop:
+			close(c.reqStream)
+			log.Println("request handler is shutdown")
+			return
+
+		case req, ok := <-c.reqStream:
+			if !ok {
+				return
+			}
+			key := req.url
+			e := c.store[key]
+			if e == nil {
+				e = newEntry(key)
+				c.store[key] = e
+
+				go func(e *entry) {
+					e.res.value, e.res.err = f(req.url)
+					close(e.ready)
+					req.response <- e.res
+				}(e)
+				continue
+			}
+
+			go func(e *entry) {
+				<-e.ready
+				req.response <- e.res
+			}(e)
+		}
+	}
 }
 
 func (c *mutexCache) Get(key string) response {
@@ -52,36 +107,35 @@ func (c *mutexCache) Get(key string) response {
 	c.mu.Lock()
 	e := c.store[key]
 
-	if e != nil {
+	if e == nil {
+		// Cache miss, create entry and return the lock
+		e = newEntry(key)
+		c.store[key] = e
 		c.mu.Unlock()
-		<-e.ready
+
+		// Perform fetch and signal when ready
+		e.res.value, e.res.err = c.fn(key)
+		close(e.ready)
 		return e.res
 	}
 
-	// Cache miss, create entry and return the lock
-	e = &entry{
-		ready: make(chan int),
-	}
-	c.store[key] = e
+	// Cache hit, return the lock and wait for ready signal
 	c.mu.Unlock()
-
-	// Perform fetch and signal when ready
-	value, err := c.fn(key)
-
-	e.res = response{
-		value: value,
-		err:   err,
-		url:   key,
-	}
-	close(e.ready)
+	<-e.ready
 	return e.res
+
 }
 
-func NewCache(f Func) *cache {
-	return &cache{
-		fn:    f,
-		store: make(map[string]*entry),
+func NewCache(stop chan int, f Func) *cache {
+	c := &cache{
+		fn:        f,
+		store:     make(map[string]*entry),
+		reqStream: make(chan request),
 	}
+
+	go c.handleRequests(stop, f)
+
+	return c
 }
 
 func NewMutexCache(f Func) *mutexCache {
@@ -117,9 +171,8 @@ func incomingUrls() []string {
 }
 
 // urlProducer generates a fixed stream of urls
-func urlProducer(stop <-chan int) <-chan string {
+func urlProducer(stop <-chan int, repeat int) <-chan string {
 	var (
-		repeat    = 1
 		urlStream = make(chan string)
 		urls      = []string{
 			"https://golang.org",
@@ -134,6 +187,7 @@ func urlProducer(stop <-chan int) <-chan string {
 		for i := 0; i < repeat+1; i++ {
 			select {
 			case <-stop:
+				log.Println("url producer shutting down")
 				return
 
 			default:
@@ -169,6 +223,7 @@ func urlConsumer(stop <-chan int, urlStream <-chan string, c Cache) <-chan respo
 		for url := range urlStream {
 			select {
 			case <-stop:
+				log.Println("url consumer shutting down")
 				return
 
 			default:
@@ -188,12 +243,11 @@ func urlConsumer(stop <-chan int, urlStream <-chan string, c Cache) <-chan respo
 }
 
 func main() {
-	var (
-		c    = NewMutexCache(httpGetBody)
-		stop = make(chan int)
-	)
+	stop := make(chan int)
 
-	respStream := urlConsumer(stop, urlProducer(stop), c)
+	c := NewCache(stop, httpGetBody)
+	urlStream := urlProducer(stop, 4)
+	respStream := urlConsumer(stop, urlStream, c)
 
 	for res := range respStream {
 		if res.err != nil {
@@ -203,4 +257,10 @@ func main() {
 
 		fmt.Printf("%s, %s, %d bytes\n", res.url, time.Since(res.start), len(res.value.([]byte)))
 	}
+
+	// Clean up the cache once done taking responses
+	log.Println("starting graceful shutdown")
+	close(stop)
+	<-c.reqStream
+	log.Println("shutdown complete, goodbye")
 }
