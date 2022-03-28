@@ -165,7 +165,6 @@ func (c *mutexCache) Get(key string) response {
 	c.mu.Unlock()
 	<-e.ready
 	return e.res
-
 }
 
 // httpGetBody is a simple function to make a get request on a given url.  httpGetBody
@@ -182,16 +181,12 @@ func httpGetBody(url string) (interface{}, error) {
 
 // incomingUrls returns a fixed length slice of urls
 func incomingUrls() []string {
-	var (
-		urls = []string{
-			"https://golang.org",
-			"https://godoc.org",
-			"https://play.golang.org",
-			"https://gopl.io",
-		}
-	)
-
-	return append(urls, urls...)
+	return []string{
+		"https://golang.org",
+		"https://godoc.org",
+		"https://play.golang.org",
+		"https://gopl.io",
+	}
 }
 
 // urlProducer generates a fixed stream of urls
