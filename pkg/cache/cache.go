@@ -237,7 +237,9 @@ func urlConsumer(stop <-chan int, urlStream <-chan string, c Cache) <-chan respo
 	// and then closes the response channel.
 	go func() {
 		var wg sync.WaitGroup
+
 		defer func() {
+			wg.Wait()
 			log.Println("url consumer done consuming")
 			close(respStream)
 		}()
@@ -258,32 +260,38 @@ func urlConsumer(stop <-chan int, urlStream <-chan string, c Cache) <-chan respo
 				handleUrl(respStream, c, url)
 			}(url)
 		}
-
-		wg.Wait()
 	}()
 
 	return respStream
 }
 
 func main() {
-	stop := make(chan int)
+	var (
+		msg        string
+		shutdown   func()
+		stop       = make(chan int)
+		c          = NewCache(stop, httpGetBody)
+		urlStream  = urlProducer(stop, 4)
+		respStream = urlConsumer(stop, urlStream, c)
+	)
 
-	c := NewCache(stop, httpGetBody)
-	urlStream := urlProducer(stop, 4)
-	respStream := urlConsumer(stop, urlStream, c)
+	// Clean up once done taking responses
+	shutdown = func() {
+		log.Println("starting graceful shutdown")
+		close(stop)
+		<-c.reqStream
+		log.Println("shutdown complete, goodbye")
+	}
+
+	defer shutdown()
 
 	for res := range respStream {
 		if res.err != nil {
-			fmt.Printf("error reading %s: %s", res.url, res.err)
+			log.Println(fmt.Sprintf("error reading %s: %s", res.url, res.err))
 			continue
 		}
 
-		fmt.Printf("%s, %s, %d bytes\n", res.url, time.Since(res.start), len(res.value.([]byte)))
+		msg = fmt.Sprintf("%s, %s, %d bytes", res.url, time.Since(res.start), len(res.value.([]byte)))
+		log.Println(msg)
 	}
-
-	// Clean up the cache once done taking responses
-	log.Println("starting graceful shutdown")
-	close(stop)
-	<-c.reqStream
-	log.Println("shutdown complete, goodbye")
 }
