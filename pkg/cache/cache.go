@@ -197,7 +197,11 @@ func urlProducer(stop <-chan int, repeat int) <-chan string {
 	)
 
 	go func() {
-		defer close(urlStream)
+		defer func() {
+			log.Println("url producer done producing")
+			close(urlStream)
+		}()
+
 		for i := 0; i < repeat+1; i++ {
 			select {
 			case <-stop:
@@ -210,7 +214,6 @@ func urlProducer(stop <-chan int, repeat int) <-chan string {
 				urlStream <- url
 			}
 		}
-		log.Println("url producer done producing")
 	}()
 
 	return urlStream
@@ -234,7 +237,10 @@ func urlConsumer(stop <-chan int, urlStream <-chan string, c Cache) <-chan respo
 	// and then closes the response channel.
 	go func() {
 		var wg sync.WaitGroup
-		defer close(respStream)
+		defer func() {
+			log.Println("url consumer done consuming")
+			close(respStream)
+		}()
 
 		for url := range urlStream {
 			select {
@@ -254,7 +260,6 @@ func urlConsumer(stop <-chan int, urlStream <-chan string, c Cache) <-chan respo
 		}
 
 		wg.Wait()
-		log.Println("url consumer done consuming")
 	}()
 
 	return respStream
