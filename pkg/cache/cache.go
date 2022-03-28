@@ -43,6 +43,7 @@ type request struct {
 	url      string
 	response chan response
 }
+
 type response struct {
 	start time.Time
 	url   string
