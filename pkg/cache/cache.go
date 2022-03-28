@@ -1,3 +1,5 @@
+// Package cache exposes a Cache interface that stores responses from http requests.  The cache
+// implementations in the package are each concurrent, duplicate supressing and non-blocking.
 package main
 
 import (
@@ -20,12 +22,16 @@ type (
 		Get(key string) response
 	}
 
+	// cache requires goroutines to place requests into its reqStream.  all access to the store is
+	// limited to the request handler itself, which handles incoming requests in a non-blocking
+	// manner.
 	cache struct {
 		fn        Func
 		store     map[string]*entry
 		reqStream chan request
 	}
 
+	// mutexCache uses a cache lock to allow concurrent access to the store from multiple goroutines
 	mutexCache struct {
 		fn    Func
 		store map[string]*entry
@@ -58,6 +64,17 @@ func newEntry(key string) *entry {
 	}
 }
 
+func (e *entry) call(f Func, key string, respStream chan<- response) {
+	e.res.value, e.res.err = f(key)
+	close(e.ready)
+	respStream <- e.res
+}
+
+func (e *entry) deliver(respStream chan<- response) {
+	<-e.ready
+	respStream <- e.res
+}
+
 func (c *cache) Get(key string) response {
 	respStream := make(chan response)
 	c.reqStream <- request{
@@ -85,19 +102,11 @@ func (c *cache) handleRequests(stop chan int, f Func) {
 			if e == nil {
 				e = newEntry(key)
 				c.store[key] = e
-
-				go func(e *entry) {
-					e.res.value, e.res.err = f(req.url)
-					close(e.ready)
-					req.response <- e.res
-				}(e)
+				go e.call(c.fn, req.url, req.response)
 				continue
 			}
 
-			go func(e *entry) {
-				<-e.ready
-				req.response <- e.res
-			}(e)
+			go e.deliver(req.response)
 		}
 	}
 }
@@ -174,12 +183,7 @@ func incomingUrls() []string {
 func urlProducer(stop <-chan int, repeat int) <-chan string {
 	var (
 		urlStream = make(chan string)
-		urls      = []string{
-			"https://golang.org",
-			"https://godoc.org",
-			"https://play.golang.org",
-			"https://gopl.io",
-		}
+		urls      = incomingUrls()
 	)
 
 	go func() {
@@ -187,7 +191,7 @@ func urlProducer(stop <-chan int, repeat int) <-chan string {
 		for i := 0; i < repeat+1; i++ {
 			select {
 			case <-stop:
-				log.Println("url producer shutting down")
+				log.Println("url producer was stopped")
 				return
 
 			default:
@@ -196,6 +200,7 @@ func urlProducer(stop <-chan int, repeat int) <-chan string {
 				urlStream <- url
 			}
 		}
+		log.Println("url producer done producing")
 	}()
 
 	return urlStream
@@ -223,7 +228,7 @@ func urlConsumer(stop <-chan int, urlStream <-chan string, c Cache) <-chan respo
 		for url := range urlStream {
 			select {
 			case <-stop:
-				log.Println("url consumer shutting down")
+				log.Println("url consumer was stopped")
 				return
 
 			default:
@@ -238,7 +243,9 @@ func urlConsumer(stop <-chan int, urlStream <-chan string, c Cache) <-chan respo
 		}
 
 		wg.Wait()
+		log.Println("url consumer done consuming")
 	}()
+
 	return respStream
 }
 
