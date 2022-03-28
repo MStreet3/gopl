@@ -64,17 +64,33 @@ func newEntry(key string) *entry {
 	}
 }
 
+// call blocks until the function returns a value and an error.  entry's ready state is signalled
+// and the response is sent along the passed response stream
 func (e *entry) call(f Func, key string, respStream chan<- response) {
 	e.res.value, e.res.err = f(key)
 	close(e.ready)
 	respStream <- e.res
 }
 
+// deliver blocks until an entry is ready and then sends its response on the passed response stream
 func (e *entry) deliver(respStream chan<- response) {
 	<-e.ready
 	respStream <- e.res
 }
 
+func NewCache(stop chan int, f Func) *cache {
+	c := &cache{
+		fn:        f,
+		store:     make(map[string]*entry),
+		reqStream: make(chan request),
+	}
+
+	go c.handleRequests(stop, f)
+
+	return c
+}
+
+// Get puts a new request on the cache's request stream and blocks until a response is received.
 func (c *cache) Get(key string) response {
 	respStream := make(chan response)
 	c.reqStream <- request{
@@ -85,6 +101,9 @@ func (c *cache) Get(key string) response {
 	return response
 }
 
+// handleRequests is a service that processes all of the cache requests pulled from the request
+// stream.  handleRequests ensures that duplicates are suppressed and that requests are processed
+// in a non-blocking manner.
 func (c *cache) handleRequests(stop chan int, f Func) {
 	for {
 		select {
@@ -99,6 +118,8 @@ func (c *cache) handleRequests(stop chan int, f Func) {
 			}
 			key := req.url
 			e := c.store[key]
+
+			// Cache miss, launch new goroutine to populate the entry
 			if e == nil {
 				e = newEntry(key)
 				c.store[key] = e
@@ -106,11 +127,22 @@ func (c *cache) handleRequests(stop chan int, f Func) {
 				continue
 			}
 
+			// Cache hit, launch new goroutine to return response when found entry is ready
 			go e.deliver(req.response)
 		}
 	}
 }
 
+func NewMutexCache(f Func) *mutexCache {
+	return &mutexCache{
+		fn:    f,
+		store: make(map[string]*entry),
+		mu:    &sync.Mutex{},
+	}
+}
+
+// Get is called concurrently to access a cache's store and each goroutine needs mutually exclusive
+// access.
 func (c *mutexCache) Get(key string) response {
 	// Check for a cache hit, block until entry is ready if cache hit
 	c.mu.Lock()
@@ -135,26 +167,8 @@ func (c *mutexCache) Get(key string) response {
 
 }
 
-func NewCache(stop chan int, f Func) *cache {
-	c := &cache{
-		fn:        f,
-		store:     make(map[string]*entry),
-		reqStream: make(chan request),
-	}
-
-	go c.handleRequests(stop, f)
-
-	return c
-}
-
-func NewMutexCache(f Func) *mutexCache {
-	return &mutexCache{
-		fn:    f,
-		store: make(map[string]*entry),
-		mu:    &sync.Mutex{},
-	}
-}
-
+// httpGetBody is a simple function to make a get request on a given url.  httpGetBody
+// blocks until the request is complete.
 func httpGetBody(url string) (interface{}, error) {
 	resp, err := http.Get(url)
 	if err != nil {
@@ -206,6 +220,7 @@ func urlProducer(stop <-chan int, repeat int) <-chan string {
 	return urlStream
 }
 
+// handleUrl calls a cache's Get method and forwards the response along
 func handleUrl(respStream chan<- response, c Cache, url string) {
 	start := time.Now()
 	response := c.Get(url)
@@ -215,7 +230,7 @@ func handleUrl(respStream chan<- response, c Cache, url string) {
 
 // urlConsumer reads from a urlStream and launches a new goroutine to execute the Get method
 // of the given cache.  Returns a stream of responses that is closed once all urls have been
-// processed.
+// processed.  urlConsumer ensures that the cache requests are done in a concurrent manner.
 func urlConsumer(stop <-chan int, urlStream <-chan string, c Cache) <-chan response {
 	respStream := make(chan response)
 
